@@ -1,0 +1,16 @@
+[server]
+server_port = 50051
+
+[cluster]
+node_ips = ["10.0.0.1", "10.0.0.2"]
+
+[retry_policy]
+max_retries = 10
+initial_backoff_ms = 100
+max_backoff_ms = 100000
+
+# Required when mode is "psk". The sample key below is rejected at startup—replace it.
+[tls]
+mode = "psk"
+psk_identity = "mnccd-cluster"
+psk_key = "replace-with-a-long-random-secret"

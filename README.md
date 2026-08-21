@@ -1,364 +1,328 @@
-# NVIDIA PLC OSS Standard Repository Template
+# nvidia-mnccd
 
-This repository provides the standard templates and starting guidance for NVIDIA projects that publish open-source or source-available software. It is a guided superset: keep and customize the sections and files that match your project, and trim anything that does not apply.
+Nvidia Multi-Node Confidential Compute Daemon (nvidia-mnccd) is an open source privileged usermode daemon that is supposed to run either on baremental or inside a confidential VM (CVM). It is responsible for key/IV management across nodes, multi-node discovery, multi-node attestation and ensuring that all the nodes are assigned to the same tenant.
 
-The template set is intentionally more complete than any one project necessarily needs. Before treating the template set as finished, define the project's lifecycle, software maturity, license model, support posture, and contribution policy, then make sure every retained file describes that profile consistently.
+## Building nvidia-mnccd
 
-This README provides a quick overview of the template and a project README skeleton below the customization separator. For agent instructions on applying the templates, see [TEMPLATE_INSTRUCTIONS.md](TEMPLATE_INSTRUCTIONS.md).
+The daemon is a Rust crate built with [Cargo](https://doc.rust-lang.org/cargo/). There is a single build that always includes gRPC TLS support: **TLS-PSK** (default at runtime, via OpenSSL and `tonic-tls`), **mutual TLS** (rustls with operator-supplied PEM certificates), and plain HTTP/2 when disabled. HKDF key derivation for NVLE flows uses the `hkdf` crate. Whether gRPC connections use TLS, and which mode, is chosen at **runtime** via `[tls].mode` in config and the `--no-tls` flag (see [Running nvidia-mnccd](#running-nvidia-mnccd)).
 
-**After customization, remove the template guidance above the separator and retain the completed project README below it.**
+**Prerequisites**
 
-## Included templates
+- A recent stable Rust toolchain (`rustup` recommended).
+- **OpenSSL development libraries** on the build host (for example `libssl-dev` on Debian/Ubuntu, `openssl-devel` on RHEL). Required for the default PSK transport (`openssl-sys` / `tonic-tls`).
+- **`nvml.h` from CUDA 13.5 or newer.** `build.rs` generates NVML bindings from this header (only the header is needed at compile time; `libnvidia-ml.so` is loaded at runtime). Older toolkits lack the NVLE/remap-table APIs and the build fails.
 
-This is a map of the reusable files included in this repository, not a list of files every derived repository must retain. Use the agent instructions to determine applicability.
+**`nvml.h` location**
 
-### Root
+The header is resolved in this order:
 
-- [README.md](README.md): Project context, status, getting started, usage, support, security, releases, roadmap, and license skeleton
-- [TEMPLATE_INSTRUCTIONS.md](TEMPLATE_INSTRUCTIONS.md): Agent-facing workflow for applying the template; remove it from the derived public repository
-- [LICENSE](LICENSE): License text that every repository must confirm or replace with its exact license
-- [CONTRIBUTING.md](CONTRIBUTING.md): Open, limited, or closed contribution-policy alternatives
-- [SECURITY.md](SECURITY.md): Private vulnerability-reporting guidance
-- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md): Community standards for projects that accept public participation
-- [AGENTS.md](AGENTS.md): Concise, repository-specific context, important paths, and verified commands for coding agents used by contributors or users
-- [RELEASE.md](RELEASE.md): Maintainer instructions for preparing, publishing, verifying, and recovering releases
-- [SUPPORT.md](SUPPORT.md): Detailed support guidance retained only when the README is not sufficient
-- [GOVERNANCE.md](GOVERNANCE.md): Decision and role model retained when the project publishes one
-- [MAINTAINERS.md](MAINTAINERS.md): Current maintainer information, with public contact or role-change guidance when the project publishes it
-- [CITATION.md](CITATION.md): Preferred citation metadata retained when the software is citable
-- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md): Attribution and notice records retained when license or dependency obligations require them
+1. **`NVML_HEADER_DIR`** — directory that contains `nvml.h` (not the file itself). Use this when the CUDA toolkit is not in a default path, or when `/usr/local/cuda` does not point at 13.5+.
+2. Otherwise the first readable file among:
+   - `/usr/include/nvml.h`
+   - `/usr/local/include/nvml.h`
+   - `/usr/local/cuda/include/nvml.h` (typical CUDA SDK install; `/usr/local/cuda` is usually a symlink to the active toolkit, e.g. `/usr/local/cuda-13.5/include/nvml.h`)
 
-### `.github/`
+A versioned toolkit that is not linked as `/usr/local/cuda` is not searched automatically:
 
-- [ISSUE_TEMPLATE/01_bug_report.yml](.github/ISSUE_TEMPLATE/01_bug_report.yml): Form for accepted public bug reports
-- [ISSUE_TEMPLATE/02_feature_request.yml](.github/ISSUE_TEMPLATE/02_feature_request.yml): Form for accepted public feature requests
-- [ISSUE_TEMPLATE/03_documentation_request.yml](.github/ISSUE_TEMPLATE/03_documentation_request.yml): Form for accepted public documentation requests
-- [ISSUE_TEMPLATE/config.yml](.github/ISSUE_TEMPLATE/config.yml): Issue chooser configuration, blank-issue policy, and question and security contact links ([GitHub documentation](https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/configuring-issue-templates-for-your-repository))
-- [PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md): Pull request prompts for projects that accept pull requests ([GitHub documentation](https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/creating-a-pull-request-template-for-your-repository))
-- [CODEOWNERS](.github/CODEOWNERS): Optional automatic review requests for specific users or teams based on the files changed
-
-## Common project-specific additions
-
-The template does not prescribe a complete software layout. Add the documentation, automation, packaging, tests, examples, and other files the project needs. Common additions include:
-
-- `docs/`
-- `examples/`
-- `tests/`
-- `scripts/`
-- Configured `.github/workflows/`
-- Container or development environment: `Dockerfile`, `docker/`, or `.devcontainer/`
-- Build and package files:
-  - Python: `pyproject.toml`, `setup.cfg`, `setup.py`, `requirements.txt`, or `environment.yml`
-  - C++: `CMakeLists.txt`, `cmake/`, or `vcpkg.json`
-- Repository hygiene: `.gitignore`, `.gitattributes`, `.editorconfig`, `.pre-commit-config.yaml`, or `.clang-format`
-- Project-specific license or notice files when the included starters do not apply
-
-## Usage for new NVIDIA repositories
-
-1. Clone [PLC-OSS-Template](https://github.com/NVIDIA-GitHub-Management/PLC-OSS-Template).
-2. Point your coding agent at the agent-facing [TEMPLATE_INSTRUCTIONS.md](TEMPLATE_INSTRUCTIONS.md).
-3. Replace `__PROJECT__` throughout the retained templates, `__ORG__` in `.github/CODEOWNERS` and retained GitHub URLs, and every remaining `__PLACEHOLDER_LIKE_THIS__` with accurate project-specific content.
-4. Keep, customize, or remove conditional sections and files according to your project's needs. Conditional content blocks use `<!-- TEMPLATE:BEGIN ... -->` and `<!-- TEMPLATE:END ... -->`. **Use when** identifies conditional content, **Choose** identifies alternatives, and **Write** identifies author guidance that must be replaced with project content. Remove unselected content blocks, then remove all visible author guidance and conditional markers from the retained content.
-5. Add any project-specific content or files the software needs; this template is a framework meant to be built on.
-6. Configure repository settings and channels to match the written policies.
-
-**Remove before publishing**
-
-Remove `TEMPLATE_INSTRUCTIONS.md`, the template guidance above the README separator, and any files or sections that do not apply. From retained files, remove author guidance, conditional markers, setup comments, and unresolved placeholders.
-
-**Files requiring little or no customization**
-
-- `SECURITY.md`, after confirming the standard NVIDIA reporting path remains applicable
-- `CODE_OF_CONDUCT.md`, when the project accepts public participation, after replacing its project placeholder
-- Applicable issue and pull request templates, after resolving placeholders, links, and repository settings
-
-**Files you must customize or remove**
-
-- `README.md`
-- `CONTRIBUTING.md`
-- `LICENSE` and legal contribution files
-- `.github/CODEOWNERS`: Customize and retain when pull requests should automatically request review from specific users or teams based on the files changed; otherwise remove.
-- `AGENTS.md`: Customize with concise repository context, important paths, and verified commands when contributors or users may use coding agents; otherwise remove.
-- `RELEASE.md`: Customize with the verified maintainer release process, or remove.
-- `SUPPORT.md` and `CITATION.md`: Customize or remove.
-- `MAINTAINERS.md` and `GOVERNANCE.md`: Include only when relevant to the project.
-- Notice files: Include only when required.
-
-**Release and roadmap surfaces**
-
-- Release history: When the project publishes releases, use GitHub Releases as the canonical public release history.
-- Release process: Use `RELEASE.md` when maintainers need a documented release procedure, and keep it aligned with release automation.
-- Public roadmap: Use a GitHub Project for an actively tracked roadmap or a pinned issue for a concise roadmap, and link it from the project README.
-
-## Usage for existing NVIDIA repositories
-
-Follow the same profile and consistency process, but preserve accurate project-specific material and merge only the applicable sections and files into the existing repository. Build on the template with anything else the project needs.
-
-<!-- REMOVE THE LINE BELOW AND EVERYTHING ABOVE AFTER CUSTOMIZATION -->
--------------------------------------------------------------------------------
-
-# __PROJECT__
-
-<!-- TEMPLATE:BEGIN id="readme.badges" condition="project-has-verifiable-public-status-information" -->
-> **Use when:** The project has maintained CI, release, coverage, or other public status information that a badge would help readers verify.
->
-> **Write:** Add relevant badges such as CI status, license, latest release, or coverage.
-
-<!-- badges go here -->
-<!-- TEMPLATE:END id="readme.badges" -->
-
-> **Write:** In one sentence, state what the software is, what it does, and who it is for.
-
-<!-- TEMPLATE:BEGIN id="readme.snapshot-notice" condition="lifecycle=snapshot" -->
-> **Use when:** The repository is a snapshot.
-
-> [!IMPORTANT]
-> This repository is a fixed snapshot provided as-is. It is not actively maintained. Issues and pull requests might not receive a response.
-
-<!-- TEMPLATE:END id="readme.snapshot-notice" -->
-
-<!-- TEMPLATE:BEGIN id="readme.maintenance-notice" condition="lifecycle=maintenance-only" -->
-> **Use when:** The project is maintenance-only.
-
-> [!NOTE]
-> This project is in maintenance-only mode. Only __SUPPORTED_MAINTENANCE_SCOPE__ is planned; new feature development is not planned.
-
-<!-- TEMPLATE:END id="readme.maintenance-notice" -->
-
-<!-- TEMPLATE:BEGIN id="readme.archive-notice" condition="lifecycle=archived" -->
-> **Use when:** The repository is archived.
-
-> [!WARNING]
-> This repository is archived and no longer maintained. __LINK_TO_SUCCESSOR_OR_FINAL_STATUS__.
-
-<!-- TEMPLATE:END id="readme.archive-notice" -->
-
-<!-- TEMPLATE:BEGIN id="readme.source-available-notice" condition="license-model=source-available" -->
-> **Use when:** The software is source available rather than open source.
-
-> [!IMPORTANT]
-> This software is source available, not open source. Review the [source-available usage terms](#source-available-usage-terms) before using, modifying, or distributing it.
-
-<!-- TEMPLATE:END id="readme.source-available-notice" -->
-
-## Overview
-
-> **Write:** Explain what the software does, why it is useful, and its main capabilities. Where relevant, cover the intended audience, common use cases, and important scope details. Include a concise statement describing the project's status and summarizing its support and contribution policies.
-
-### Features
-
-> **Write:** List key capabilities in bullets or a concise table.
-
-## Getting started
-
-> **Write:** Provide the shortest path to install or obtain the software and run something meaningful. If no runnable quick start applies, direct readers to the most useful next step.
-
-```bash
-# Install or obtain the software
-__QUICK_START_INSTALL_COMMAND__
-
-# Run a minimal example
-__QUICK_START_COMMAND__
+```sh
+# Example: CUDA 13.5 installed at /usr/local/cuda-13.5
+NVML_HEADER_DIR=/usr/local/cuda-13.5/include cargo build
 ```
 
-Expected result:
+**Debug builds**
+
+```sh
+cargo build
+```
+
+**Release builds**
+
+```sh
+cargo build --release
+```
+
+The compiled binary is `target/debug/nvidia-mnccd` or `target/release/nvidia-mnccd`, depending on the profile.
+
+## Running nvidia-mnccd
+
+**Configuration directory**
+
+At startup the process loads `mnccd_config.toml` from a directory chosen in this order:
+
+1. **`MNCCD_DATA_DIR`** (runtime override).
+2. **`CARGO_MANIFEST_DIR`** (set automatically when you use `cargo run`).
+3. Compile-time default `/etc/nvidia-mnccd` (packagers can override at build time with `MNCCD_DEFAULT_DATA_DIR=<path> cargo build`).
+
+Example layout:
 
 ```text
-__EXPECTED_OUTPUT__
+$MNCCD_DATA_DIR/
+  mnccd_config.toml
+  tls/                   # only required when [tls].mode = "mtls"
+    ca-root.crt          # cluster CA certificate (trust anchor)
+    server.key / server.crt
+    client.key / client.crt
 ```
 
-## Requirements
+**TLS modes**
 
-> **Write:** List only prerequisites and remove categories that do not apply.
+Set `[tls].mode` in `mnccd_config.toml` (all nodes must use the same mode):
 
-- OS and architecture: __SUPPORTED_OS_AND_ARCHITECTURE__
-- Runtime or compiler: __RUNTIME_OR_COMPILER_VERSIONS__
-- NVIDIA dependencies: __NVIDIA_DEPENDENCIES_OR_NOT_APPLICABLE__
-- GPU, driver, and CUDA requirements: __GPU_DRIVER_CUDA_REQUIREMENTS_OR_NOT_APPLICABLE__
-- Known-good environment: __KNOWN_GOOD_ENVIRONMENT__
+| Mode | Config value | Description |
+| --- | --- | --- |
+| **TLS-PSK** (default) | `psk` | OpenSSL TLS 1.2 DHE-PSK (forward secrecy). No certificate files under `tls/`. Same `psk_identity` and `psk_key` on every node. |
+| Mutual TLS | `mtls` | rustls with PEM certificates. Requires operator-supplied files under `tls/` on every node (see below). |
+| Plaintext | `none` | Unencrypted gRPC. Usually selected with `--no-tls` on the CLI (overrides config). |
 
-## Installation
+If the `[tls]` section is omitted, MNCCD defaults to **`psk`**, but **`psk_identity` and `psk_key` are required** and must be set explicitly (startup fails if either is missing or empty).
 
-> **Write:** Explain the recommended installation method and any supported alternatives. If the software is not distributed or installed separately, explain that.
+**TLS-PSK (`psk`, default)**
 
-```bash
-__INSTALL_COMMANDS__
+PSK encrypts the gRPC mesh using a shared cluster secret. Each node is both TLS client and server; peers authenticate with the same pre-shared identity and key. Ciphersuites are **DHE-PSK-AES256-GCM-SHA384** and **DHE-PSK-AES128-GCM-SHA256**: ephemeral Diffie-Hellman is mixed with the PSK so session keys have forward secrecy—captured traffic cannot be decrypted later from the cluster PSK alone.
+
+| Field | Meaning |
+| --- | --- |
+| `[tls].mode` | `"psk"` (default if `[tls]` is omitted). |
+| `[tls].psk_identity` | PSK identity sent in the TLS handshake (public label, like a username). **Required** when mode is `psk`. Must match on every node. |
+| `[tls].psk_key` | Pre-shared key bytes (the secret). **Required** when mode is `psk`. Must match on every node. |
+
+Limits (OpenSSL): identity ≤ ~127 bytes; key ≤ 256 bytes.
+
+Example:
+
+```toml
+[tls]
+mode = "psk"
+psk_identity = "mnccd-cluster"
+psk_key = "replace-with-a-long-random-secret"
 ```
 
-## Usage
+Provision the same `psk_identity` and `psk_key` on every node (ConfigMap, Secret, or baked into `mnccd_config.toml`). The sample placeholder key in the shipped `mnccd_config.toml` (`replace-with-a-long-random-secret`) is **rejected at startup**—replace it before running.
 
-> **Write:** Show a realistic, copy-pastable example of the software's primary use.
+**Mutual TLS (`mtls`)**
 
-```text
-__MINIMAL_USAGE_EXAMPLE__
+TLS material uses the **same directory** as `mnccd_config.toml` (see resolution order above). With `[tls].mode = "mtls"`, install the following PEM files under `tls/` on every node **before** starting the daemon. MNCCD does **not** generate certificates or keys.
+
+| File | Role |
+| --- | --- |
+| `tls/ca-root.crt` | Cluster CA certificate (trust anchor). Must be the same on every node. |
+| `tls/server.crt` / `tls/server.key` | This node's gRPC server identity. |
+| `tls/client.crt` / `tls/client.key` | This node's gRPC client identity when dialing peers. |
+
+Server certificates must present a DNS SAN (or name) of `mnccd` — peer clients verify against that domain. Private keys should be mode `0600`.
+
+`tls/ca-root.key` is **not** read by MNCCD at runtime; keep the CA private key offline and use it only when issuing node certificates.
+
+The TOML file defines the gRPC listen port and the cluster membership:
+
+| Field | Meaning |
+| --- | --- |
+| `[server].server_port` | TCP port the gRPC server binds on (each node uses the same port number). |
+| `[cluster].node_ips` | List of all node IP addresses in the cluster. The **leader** is the node with the numerically smallest IP; that node runs NVLE setup when not skipped (see below). |
+| `[retry_policy].max_retries` | Maximum number of retries for transient gRPC failures (for example `Unavailable`). |
+| `[retry_policy].initial_backoff_ms` | Base delay in milliseconds before the first retry; each subsequent retry doubles the delay until capped by `max_backoff_ms`. |
+| `[retry_policy].max_backoff_ms` | Maximum delay between retries, in milliseconds (exponential backoff is capped at this value). |
+| `[tls].mode` | gRPC transport: `psk` (default), `mtls`, or `none`. All nodes must match. |
+| `[tls].psk_identity` | TLS-PSK identity. **Required** when mode is `psk`; must match on every node. |
+| `[tls].psk_key` | TLS-PSK secret. **Required** when mode is `psk`; must match on every node. |
+
+Example `mnccd_config.toml`:
+
+```toml
+[server]
+server_port = 50051
+
+[cluster]
+node_ips = ["10.0.0.1", "10.0.0.2"]
+
+[retry_policy]
+max_retries = 10
+initial_backoff_ms = 100
+max_backoff_ms = 100000
+
+[tls]
+mode = "psk"
+psk_identity = "mnccd-cluster"
+psk_key = "replace-with-a-long-random-secret"
 ```
 
-<!-- TEMPLATE:BEGIN id="readme.telemetry" condition="software-collects-telemetry-or-usage-data" -->
-## Telemetry and data collection
+Example with **mutual TLS** instead:
 
-> **Use when:** The software collects telemetry or usage data.
+```toml
+[tls]
+mode = "mtls"
+```
 
-- Data collected: __DATA_COLLECTED__
-- Data not collected: __DATA_NOT_COLLECTED__
-- Purpose: __COLLECTION_PURPOSE__
-- Disable or opt out: __OPT_OUT_INSTRUCTIONS__
-- More information: __TELEMETRY_DOCUMENTATION__
-<!-- TEMPLATE:END id="readme.telemetry" -->
+Then place `ca-root.crt`, `server.{crt,key}`, and `client.{crt,key}` under `tls/` as described above.
+**Command-line arguments**
 
-## Documentation
+Run `nvidia-mnccd --help` (or `-h`) for usage, including where `mnccd_config.toml` is loaded from. Run `nvidia-mnccd --version` (or `-V`) to print the crate version.
 
-> **Write:** Keep only links to documentation surfaces the project actually maintains.
+| Argument | Required | Description |
+| --- | --- | --- |
+| `--skip-nvle` | No | When set, the leader node **does not** call `setup_nvle_on_all_gpus()` after peer echo checks. Omit for the normal path where the leader configures NVLE on GPUs across the cluster. |
+| `--no-tls` | No | Force plaintext gRPC (`[tls].mode = "none"`), regardless of config. Must be used on **all** nodes together, or on **none** of them. Strictly for development platforms only; not recommended on production. |
+| `--daemonize` | No | Fork into the background and redirect stdout/stderr to `/tmp/nvidia-mnccd.out` and `/tmp/nvidia-mnccd.err`. For manual runs without systemd. **Do not** use with the systemd unit (see below). |
+| `--log-level <LEVEL>` | No | Base log verbosity: `error`, `warn`, `info` (default), `debug`, or `trace`. Overridden by the `RUST_LOG` environment variable when set. See [Logging](#logging). |
 
-- Documentation and API reference: __DOCUMENTATION_HOME__
-- Examples and tutorials: __EXAMPLES_LINK__
+**TLS mode (all nodes must match)**
 
-<!-- TEMPLATE:BEGIN id="readme.architecture" condition="architecture-context-is-useful" -->
-## Architecture
+Every node must use the same transport: **PSK** (default), **mTLS**, or **plaintext** (`--no-tls` / `tls.mode = "none"`). Mixing modes (for example PSK on one node and `--no-tls` on another) is not supported and peer connectivity will fail.
 
-> **Use when:** The software benefits from an architecture overview.
->
-> **Write:** Describe the main components and how they relate. Include or link to a diagram when it makes the architecture materially easier to understand.
+Examples:
 
-<!-- TEMPLATE:END id="readme.architecture" -->
+```sh
+# Usage summary
+/path/to/nvidia-mnccd --help
 
-<!-- TEMPLATE:BEGIN id="readme.performance" condition="project-publishes-performance-claims" -->
-## Performance
+# From the repo (Cargo sets CARGO_MANIFEST_DIR; uses ./mnccd_config.toml)
+# Default: TLS-PSK when [tls].mode is omitted; psk_identity and psk_key are still required
+cargo run
 
-> **Use when:** The project publishes performance claims or benchmarks.
->
-> **Write:** Summarize benchmarks and link to detailed results. Include the hardware, software, and methodology used.
+# Installed or copied binary: set config directory
+export MNCCD_DATA_DIR=/path/to/config/dir
+/path/to/nvidia-mnccd
 
-<!-- TEMPLATE:END id="readme.performance" -->
+# Skip NVLE setup on the leader
+/path/to/nvidia-mnccd --skip-nvle
 
-## Support and contributions
+# Plain gRPC (no TLS)—must be set on every node in the cluster
+/path/to/nvidia-mnccd --no-tls
 
-- Bug reports: __BUG_REPORT_PATH_OR_NOT_ACCEPTED__
-- Questions and support: __SUPPORT_PATH_OR_NOT_PROVIDED__
-- Feature requests: __FEATURE_REQUEST_PATH_OR_NOT_ACCEPTED__
-- Response expectations: __SUPPORT_RESPONSE_EXPECTATION__
-- Contribution scope: __CONTRIBUTION_SCOPE_OR_NOT_ACCEPTED__
+# Manual background run (logs under /tmp; not for systemd)
+/path/to/nvidia-mnccd --daemonize
+```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the project's contribution policy and participation guidance.
+### Privileges
 
-<!-- TEMPLATE:BEGIN id="readme.code-of-conduct" condition="project-accepts-public-participation" -->
-> **Use when:** The project accepts public participation through contributions, bug reports, questions, or community channels.
+| | root | non-root |
+| --- | --- | --- |
+| Foreground (default) | Supported | **Not supported** — MNCCD exits with an error |
+| `--daemonize` | Supported | Supported |
 
-All project participants must follow the [Code of Conduct](CODE_OF_CONDUCT.md).
-<!-- TEMPLATE:END id="readme.code-of-conduct" -->
+GPU and other privileged operations may still fail when MNCCD is not running as root.
 
-<!-- TEMPLATE:BEGIN id="readme.support-file" condition="project-maintains-support-file" -->
-> **Use when:** The project maintains `SUPPORT.md` with additional support guidance.
+## Production deployment
 
-See [SUPPORT.md](SUPPORT.md) for additional support guidance.
-<!-- TEMPLATE:END id="readme.support-file" -->
+Production nodes should run MNCCD under **systemd**. The binary stays in the foreground from systemd’s perspective (`Type=simple`); systemd supervises the process and collects logs. Do **not** pass `--daemonize` in the unit file.
 
-<!-- TEMPLATE:BEGIN id="readme.reproducibility" condition="repository-accompanies-research-or-contains-reproducible-results" -->
-## Reproducing published results
+### Run package
 
-> **Use when:** The repository accompanies published research or contains results intended to be reproduced.
+Build release binaries into `bin/release/<arch>/` (with matching `nvidia-mnccd.md5sum` and `nvidia-mnccd.sha256sum` files), then create a tarball:
 
-- Reference commit or release: __REFERENCE_COMMIT_OR_RELEASE__
-- Environment: __REPRODUCIBILITY_ENVIRONMENT__
-- Hardware: __KNOWN_GOOD_HARDWARE__
-- Command: `__REPRODUCTION_COMMAND__`
-- Expected result: __EXPECTED_REPRODUCTION_RESULT__
-<!-- TEMPLATE:END id="readme.reproducibility" -->
+```sh
+./scripts/generate_run_package.sh --arch "$(uname -m)"
+```
 
-<!-- TEMPLATE:BEGIN id="readme.limitations" condition="known-limitations-or-research-profile" -->
-## Known limitations
+The tarball under `_out/` contains:
 
-> **Use when:** The software has known limitations worth highlighting or the repository accompanies published research.
->
-> **Write:** Describe known limitations, failure modes, unsupported environments, and any expected variability or drift.
+- `nvidia-mnccd` and checksum sidecars
+- `mnccd_config.toml`, `LICENSE`, `third-party-notices.txt`
+- `mnccd_run_package_installer.sh`
+- `nvidia-mnccd.service`
 
-<!-- TEMPLATE:END id="readme.limitations" -->
+TLS keys and certificates are **not** included in the package; provision them separately when using mTLS.
 
-<!-- TEMPLATE:BEGIN id="readme.releases" condition="project-publishes-github-releases" -->
-## Releases
+On each node, extract the tarball and run the installer as root:
 
-> **Use when:** The project publishes releases through GitHub Releases.
+```sh
+tar -xzf nvidia-mnccd-run-*.tar.gz
+sudo ./mnccd_run_package_installer.sh
+```
 
-See [GitHub Releases](__GITHUB_RELEASES_URL__) for release notes.
+The installer copies:
 
-<!-- TEMPLATE:BEGIN id="readme.release-process" condition="release-process-file-retained" -->
-See [RELEASE.md](RELEASE.md) for the maintainer release process.
-<!-- TEMPLATE:END id="readme.release-process" -->
-<!-- TEMPLATE:END id="readme.releases" -->
+| Artifact | Install path |
+| --- | --- |
+| Binary | `/usr/bin/nvidia-mnccd` |
+| Config | `/etc/nvidia-mnccd/mnccd_config.toml` (mode `0600`; contains `psk_key` when using TLS-PSK) |
+| TLS directory | `/etc/nvidia-mnccd/tls/` (created empty; used for **mTLS** only) |
+| LICENSE / third-party-notices.txt | `/usr/share/nvidia/mnccd/doc/` |
+| systemd unit | `/usr/lib/systemd/system/nvidia-mnccd.service` |
 
-<!-- TEMPLATE:BEGIN id="readme.roadmap" condition="project-publishes-public-roadmap" -->
-## Roadmap
+Edit `/etc/nvidia-mnccd/mnccd_config.toml` for the cluster before starting the service. The bundled unit uses **TLS-PSK** when `[tls].mode` is `psk` or omitted; set unique `psk_identity` and `psk_key` (required for PSK). For **`[tls].mode = "mtls"`**, install the PEM set described under **Mutual TLS (`mtls`)** above at `/etc/nvidia-mnccd/tls/` on every node (private keys mode `0600`).
 
-> **Use when:** The project publishes a public roadmap.
->
-> **Write:** Link to the project's canonical GitHub Project or pinned roadmap issue. Do not duplicate changing status or dates here.
+### Starting the service
 
-<!-- TEMPLATE:END id="readme.roadmap" -->
+After installation, load the unit and start MNCCD:
 
-<!-- TEMPLATE:BEGIN id="readme.governance" condition="project-publishes-governance-or-maintainer-information" -->
-## Governance and maintainers
+```sh
+sudo systemctl daemon-reload
+sudo systemctl start nvidia-mnccd
+```
 
-> **Use when:** The project publishes governance or maintainer information. Keep only the links to files the project publishes.
+To start automatically on boot:
 
-- Governance: [GOVERNANCE.md](GOVERNANCE.md)
-- Maintainers: [MAINTAINERS.md](MAINTAINERS.md)
-<!-- TEMPLATE:END id="readme.governance" -->
+```sh
+sudo systemctl enable nvidia-mnccd
+```
 
-## Security
+Check status and logs:
 
-Do not report security vulnerabilities through public GitHub issues. See [SECURITY.md](SECURITY.md) for the reporting path.
+```sh
+systemctl status nvidia-mnccd
+journalctl -u nvidia-mnccd.service -f
+```
 
-<!-- TEMPLATE:BEGIN id="readme.community" condition="project-provides-community-or-maintainer-contact-route" -->
-## Community
+The bundled unit runs `ExecStart=/usr/bin/nvidia-mnccd` (no `--daemonize`); config is loaded from `/etc/nvidia-mnccd`. Transport mode comes from `[tls].mode` in that file—**TLS-PSK** when mode is `psk` or when `[tls].mode` is omitted (in which case `psk_identity` and `psk_key` must still be set).
 
-> **Use when:** The project provides a public community channel or another way to communicate with maintainers.
->
-> **Write:** List public community channels. If none exist, state where questions should go or that no public question channel is provided.
+### Logging
 
-<!-- TEMPLATE:BEGIN id="readme.community-meetings" condition="project-holds-public-community-meetings" -->
-### Community meetings
+MNCCD logs through the [`tracing`](https://docs.rs/tracing) framework. Records carry one of five severities — `error`, `warn`, `info`, `debug`, `trace` — and are filtered against a configurable threshold.
 
-> **Use when:** The project holds public meetings that contributors or users can join.
->
-> **Write:** State the cadence, time, and time zone, and link to joining details and past recordings.
+**Log levels**
 
-<!-- TEMPLATE:END id="readme.community-meetings" -->
-<!-- TEMPLATE:END id="readme.community" -->
+- Set the verbosity with `--log-level <error|warn|info|debug|trace>` (default `info`). This applies **only to MNCCD's own logs**; dependencies (tonic, hyper, rustls, etc.) stay at `info`, so `--log-level debug` gives you detailed MNCCD output without framework noise.
+- The `RUST_LOG` environment variable, when set, **overrides** `--log-level` and controls **all** targets, with support for fine-grained per-module filters. For example:
+  - `RUST_LOG=debug` — everything at `debug` and above, dependencies included.
+  - `RUST_LOG=info,nvidia_mnccd=debug` — `debug` for MNCCD, `info` for dependencies (equivalent to `--log-level debug`).
+- At `info` you get orchestration milestones (server start, NVLE setup/refresh phases, per-node results); `debug` adds per-RPC and per-node detail; `warn`/`error` surface retries, recovery events, and failures.
 
-<!-- TEMPLATE:BEGIN id="readme.references" condition="project-has-relevant-references" -->
-## References
+> **Note:** `debug` and `trace` are intended for troubleshooting. They increase log volume and may include request/response detail — avoid enabling them broadly in production.
 
-> **Use when:** The project has references that materially help readers understand the software and its context.
->
-> **Write:** List the papers, specifications, upstream projects, or other sources that help readers understand the software and its context.
+**Where output goes**
 
-<!-- TEMPLATE:END id="readme.references" -->
+| How MNCCD is run | Where output goes |
+| --- | --- |
+| systemd (`systemctl start nvidia-mnccd`) | **journald** — use `journalctl -u nvidia-mnccd.service` |
+| `--daemonize` (manual) | `/tmp/nvidia-mnccd.out`, `/tmp/nvidia-mnccd.err` |
+| Foreground (`cargo run`, direct binary) | Terminal stdout/stderr |
 
-<!-- TEMPLATE:BEGIN id="readme.citation" condition="software-is-citable" -->
-## Citation
+The output sink is selected automatically. Under systemd (`StandardOutput=journal`) MNCCD writes using journald's native protocol, so each tracing level maps to the matching journal priority (`error`→err, `warn`→warning, `info`→info, `debug`/`trace`→debug). This means severity-based filtering works, for example:
 
-> **Use when:** The software has a preferred citation.
->
-> **Write:** Provide the preferred citation and, when applicable, BibTeX. Keep it consistent with [CITATION.md](CITATION.md).
+```sh
+# Only warnings and errors from MNCCD
+journalctl -u nvidia-mnccd.service -p warning
+```
 
-<!-- TEMPLATE:END id="readme.citation" -->
+The log level must be chosen **before the service starts** — the unit is `Restart=no` and restarting MNCCD is not supported, so the level cannot be changed on a running instance. Set it while the service is stopped, then start it. To raise verbosity under systemd, add an environment override (systemd does not inherit your shell's `RUST_LOG`): run `sudo systemctl edit nvidia-mnccd.service` and add
 
-## License
+```ini
+[Service]
+Environment=RUST_LOG=nvidia_mnccd=debug
+```
 
-The software in this repository is licensed under __LICENSE_NAME__. See [LICENSE](LICENSE) for details.
+then start the service and follow the logs:
 
-<!-- TEMPLATE:BEGIN id="readme.source-available-terms" condition="license-model=source-available" -->
-### Source-available usage terms
+```sh
+sudo systemctl daemon-reload
+sudo systemctl start nvidia-mnccd.service
+journalctl -u nvidia-mnccd.service -f
+```
 
-> **Use when:** The software is source available rather than open source.
+In all other cases (foreground and `--daemonize`) MNCCD writes a human-readable text line per record (`timestamp LEVEL target: message`); ANSI colors are used only when stdout is an interactive terminal.
 
-This is a source-available license, not an open-source license. The summary below does not replace the license terms.
+### API documentation
 
-- Permitted uses: __PERMITTED_USES__
-- Restricted or prohibited uses: __RESTRICTED_USES__
-<!-- TEMPLATE:END id="readme.source-available-terms" -->
+Generate Rust and gRPC reference docs into `docs/`:
 
-<!-- TEMPLATE:BEGIN id="readme.notices" condition="software-distribution-includes-required-notices" -->
-> **Use when:** The software distribution requires copyright or third-party notices.
+```sh
+./scripts/generate_docs.sh
+```
 
-See __NOTICE_FILE_LINK__ for copyright and third-party attribution notices.
-<!-- TEMPLATE:END id="readme.notices" -->
+Rust API docs: `docs/nvidia_mnccd/index.html`. gRPC messages: `docs/grpc_messages.html` (requires `protoc-gen-doc` on `PATH`).
+
+## Contributions
+
+This project is currently not accepting contributions.
+

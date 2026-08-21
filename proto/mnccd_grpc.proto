@@ -1,0 +1,203 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+// gRPC API for the NVIDIA Multi-Node Confidential Compute Daemon (MNCCD).
+//
+// MNCCD coordinates NVLink encryption (NVLE) setup across cluster nodes: flow
+// allocation for key material, fabric-probe completion checks, ALID/CLID
+// remap-table validation, and per-link keys programmed through NVML.
+syntax = "proto3";
+
+package mnccd_grpc;
+
+// Cluster-facing MNCCD gRPC service.
+service MnccdGrpc {
+    // Smoke-test RPC; returns a greeting that includes the client-supplied name.
+    rpc MnccdGrpcEchoMessage(MnccdGrpcEchoRequest) returns (MnccdGrpcEchoResponse);
+    // Allocates a new cryptographic flow id and optional key material on the leader.
+    rpc MnccdGrpcAllocFlow(MnccdGrpcAllocFlowRequest) returns (MnccdGrpcAllocFlowResponse);
+    // Imports key material for an existing flow id (looks up shared secret from leader).
+    rpc MnccdGrpcImportFlow(MnccdGrpcImportFlowRequest) returns (MnccdGrpcImportFlowResponse);
+    // Returns the shared secret for a flow id (leader-only).
+    rpc MnccdGrpcGetSharedSecret(MnccdGrpcGetSharedSecretRequest) returns (MnccdGrpcGetSharedSecretResponse);
+    // Confirms fabric probe completion and collects NVLE private info and node identity.
+    rpc MnccdGrpcCollectGpusInfo(MnccdGrpcCollectGpusInfoRequest) returns (MnccdGrpcCollectGpusInfoResponse);
+    // Reads FLA/GPA remap table contents for all local GPUs.
+    rpc MnccdGrpcQueryRemapTable(MnccdGrpcQueryRemapTableRequest) returns (MnccdGrpcQueryRemapTableResponse);
+    // Locks the remap table on all local GPUs (post-setup, irreversible for the boot cycle).
+    rpc MnccdGrpcLockRemapTable(MnccdGrpcLockRemapTableRequest) returns (MnccdGrpcLockRemapTableResponse);
+    // Programs NVLE encryption keys for a local/remote GPU pair on one device.
+    rpc MnccdGrpcSetupNvleEncryptionKey(MnccdGrpcSetupNvleEncryptionKeyRequest) returns (MnccdGrpcSetupNvleEncryptionKeyResponse);
+    // Signals whether NVLE is ready on a local GPU.
+    rpc MnccdGrpcSetNvleReady(MnccdGrpcSetNvleReadyRequest) returns (MnccdGrpcSetNvleReadyResponse);
+    // Returns local GPUs currently in RM DRAIN_P2P recovery state.
+    rpc MnccdGrpcCollectDrainP2pGpus(MnccdGrpcCollectDrainP2pGpusRequest) returns (MnccdGrpcCollectDrainP2pGpusResponse);
+    // Reports a local RM NVLE/link-retrain recovery event to the leader.
+    rpc MnccdGrpcReportRetrainEvent(MnccdGrpcReportRetrainEventRequest) returns (MnccdGrpcReportRetrainEventResponse);
+}
+
+// Request payload for MnccdGrpcEchoMessage.
+message MnccdGrpcEchoRequest {
+    string name = 1; // Caller identifier echoed in the response greeting.
+}
+
+// Response payload for MnccdGrpcEchoMessage.
+message MnccdGrpcEchoResponse {
+    string message = 1; // Human-readable greeting, typically "Hello {name}!".
+}
+
+// Endpoint types supported when allocating a confidential-compute flow.
+enum MnccdFlowType {
+    CPU_TO_CPU = 0; // Host-to-host flow (no GPU NVLink involvement).
+    GPU_TO_GPU = 1; // GPU NVLink flow.
+}
+
+// Request to allocate flow id and derived key material.
+message MnccdGrpcAllocFlowRequest {
+    MnccdFlowType flow_type = 1; // Intended flow endpoint type.
+    optional bool mnccd_to_mnccd = 2; // When true, skip local HKDF derivation (MNCCD-to-MNCCD forwarding).
+}
+
+// Flow allocation result including identifiers and derived secrets.
+message MnccdGrpcAllocFlowResponse {
+    uint64 flow_id = 1; // Cluster-unique flow identifier assigned by the leader.
+    uint64 key_rotation_threshold = 2; // Packet count before key rotation (0 if unused).
+    bytes primary_key = 3; // 32-byte primary encryption key (empty when `mnccd_to_mnccd` is true).
+    bytes secondary_key = 4; // 32-byte secondary encryption key (empty when `mnccd_to_mnccd` is true).
+    bytes primary_ivmask = 5; // 12-byte primary IV mask (empty when `mnccd_to_mnccd` is true).
+    bytes secondary_ivmask = 6; // 12-byte secondary IV mask (empty when `mnccd_to_mnccd` is true).
+    bytes shared_secret = 7; // 32-byte root shared secret used for HKDF derivation.
+}
+
+// Request to import key material for a flow previously allocated on the leader.
+message MnccdGrpcImportFlowRequest {
+    uint64 flow_id = 1; // Flow id returned by MnccdGrpcAllocFlow.
+}
+
+// Derived key material for an imported flow.
+message MnccdGrpcImportFlowResponse {
+    MnccdFlowType flow_type = 1; // Flow type (may be unset/zero in current implementation).
+    uint64 key_rotation_threshold = 2; // Packet count before key rotation (0 if unused).
+    bytes primary_key = 3; // 32-byte HKDF-derived primary encryption key.
+    bytes secondary_key = 4; // 32-byte HKDF-derived secondary encryption key.
+    bytes primary_ivmask = 5; // 12-byte HKDF-derived primary IV mask.
+    bytes secondary_ivmask = 6; // 12-byte HKDF-derived secondary IV mask.
+}
+
+// Leader-only lookup of the root shared secret for a flow.
+message MnccdGrpcGetSharedSecretRequest {
+    uint64 flow_id = 1; // Flow id to look up.
+}
+
+// Shared secret stored on the leader for the requested flow.
+message MnccdGrpcGetSharedSecretResponse {
+    bytes shared_secret = 1; // 32-byte root shared secret.
+}
+
+// Empty request; the server enumerates all local GPUs with active NVLink fabric links.
+message MnccdGrpcCollectGpusInfoRequest {
+}
+
+// Per-GPU NVLE attributes collected after fabric probe completion.
+message MnccdGrpcGpuInfo {
+    string uuid = 1;              // GPU UUID.
+    bytes nvle_private_info = 2;  // Opaque NVLE private-info blob from nvmlDeviceGetNvlinkNvlePrivateInfo_v1.
+    string node_ip = 3;           // IP address of the node hosting this GPU.
+}
+
+// GPU inventory returned by MnccdGrpcCollectGpusInfo.
+message MnccdGrpcCollectGpusInfoResponse {
+    repeated MnccdGrpcGpuInfo gpu_infos = 1; // One entry per GPU with an active fabric link on this node.
+}
+
+// Empty request; reads remap table contents for all local GPUs.
+message MnccdGrpcQueryRemapTableRequest {
+}
+
+// Remap table snapshot for one GPU.
+// Mirrors `nvmlNvlinkGetRemapTableInfo_v1_t` (see NVML headers).
+message MnccdGrpcPerGpuRemapTableInfo {
+    string gpu_uuid = 1;                     // GPU UUID.
+    uint32 remap_tab_size = 2;               // Number of valid entries in the remap tables.
+    repeated uint32 fla_remap_table_addr = 3;  // FLA remap table addresses (first `remap_tab_size` entries).
+    repeated uint32 gpa_remap_table_addr = 4;  // SPA/GPA remap table addresses (first `remap_tab_size` entries).
+    uint32 alid = 5;                         // ALID (Anycast LID) reported by NVML for this GPU.
+}
+
+// Remap table query result for this node.
+message MnccdGrpcQueryRemapTableResponse {
+    bool success = 1;                        // True when every local GPU was queried without error.
+    string error_message = 2;                // Aggregated error detail when `success` is false.
+    repeated string queried_gpu_uuids = 3;   // UUIDs of GPUs successfully queried.
+    repeated MnccdGrpcPerGpuRemapTableInfo per_gpu_remap_table = 4; // Remap table payload per GPU.
+}
+
+// Empty request; locks remap tables on all local GPUs.
+message MnccdGrpcLockRemapTableRequest {
+}
+
+// Outcome of remap-table lock on this node.
+message MnccdGrpcLockRemapTableResponse {
+    bool success = 1;                       // True when every local GPU was locked without error.
+    string error_message = 2;               // Aggregated error detail when `success` is false.
+    repeated string locked_gpu_uuids = 3;   // UUIDs of GPUs successfully locked.
+}
+
+// Request to program NVLE encryption keys for one GPU toward a remote peer.
+message MnccdGrpcSetupNvleEncryptionKeyRequest {
+    string device_uuid = 1;                    // UUID of the local GPU receiving the key programming.
+    uint32 local_gpu_alid = 2;                 // ALID of the local GPU.
+    uint32 remote_gpu_alid = 3;                // ALID of the remote GPU peer.
+    bytes local_gpu_nvle_private_info = 4;     // Opaque NVLE private-info blob of the local GPU.
+    bytes remote_gpu_nvle_private_info = 5;    // Opaque NVLE private-info blob of the remote GPU peer.
+    bytes nvle_key = 6;                        // 32-byte symmetric NVLE encryption key secret.
+}
+
+// Outcome of NVLE encryption key programming on one GPU.
+message MnccdGrpcSetupNvleEncryptionKeyResponse {
+    bool success = 1;                        // True when NVML accepted the key programming call.
+    string error_message = 2;                // NVML or validation error detail when `success` is false.
+    bool retryable = 3;                      // True when the caller should retry this request after transient RM busy state.
+}
+
+// Request; the server polls local RM/NVML recovery state.
+message MnccdGrpcCollectDrainP2pGpusRequest {
+}
+
+// One GPU observed in RM recovery state for NVLE/link retrain handling.
+message MnccdGrpcRetrainGpu {
+    string node_ip = 1;          // Node that observed the recovery action.
+    string gpu_uuid = 2;         // UUID of the GPU in DRAIN_P2P.
+    uint32 gpu_index = 3;        // Local NVML device index on that node.
+    uint32 recovery_action = 4;  // NVML GPU recovery action value.
+}
+
+// Local-node response containing GPUs currently in DRAIN_P2P.
+message MnccdGrpcCollectDrainP2pGpusResponse {
+    bool success = 1;
+    string error_message = 2;
+    repeated MnccdGrpcRetrainGpu gpus = 3;
+}
+
+// Report from a node that observed one or more GPUs in DRAIN_P2P.
+message MnccdGrpcReportRetrainEventRequest {
+    repeated MnccdGrpcRetrainGpu gpus = 1;
+}
+
+// Leader response after attempting the MNCCD recovery action.
+message MnccdGrpcReportRetrainEventResponse {
+    bool success = 1;
+    string error_message = 2;
+}
+
+// Request to signal the NVLE readiness state of all local GPUs.
+message MnccdGrpcSetNvleReadyRequest {
+    bool ready = 1;                         // Desired NVLE readiness state to program on every local GPU.
+}
+
+// Outcome of setting NVLE readiness on this node.
+message MnccdGrpcSetNvleReadyResponse {
+    repeated string ready_gpu_uuids = 1;   // UUIDs of GPUs successfully updated.
+}

@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+[Unit]
+Description=NVIDIA Multi-Node Confidential Compute Daemon
+Documentation=file:/usr/share/nvidia/mnccd/doc/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+RuntimeDirectory=nvidia-mnccd
+ExecStart=/usr/bin/nvidia-mnccd
+WorkingDirectory=/etc/nvidia-mnccd
+Restart=no
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nvidia-mnccd
+
+[Install]
+WantedBy=multi-user.target
